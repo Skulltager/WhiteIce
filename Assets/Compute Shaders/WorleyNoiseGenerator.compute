@@ -1,0 +1,93 @@
+﻿#pragma kernel GenerateWorleyPositions
+#pragma kernel GenerateWorleyNoise
+
+int positionsSize;
+float pixelsPerPosition;
+int textureSize;
+uint channel;
+float maximumDistance;
+float weight;
+uint seedX;
+uint seedY;
+uint seedZ;
+RWTexture3D<float4> randomPositions;
+RWTexture3D<float4> worleyNoise;
+
+float Hash(uint seed, int xLocation, int yLocation, int zLocation)
+{
+	seed ^= 2747636419u;
+	seed += xLocation;
+	seed *= 2654435769u;
+	seed ^= seed >> 16;
+	seed += yLocation;
+	seed *= 2654435769u;
+	seed ^= seed >> 16;
+	seed += zLocation;
+	seed *= 2654435769u;
+	seed ^= seed >> 16;
+	seed *= 2654435769u;
+	return seed / 4294967295.0;
+}
+
+[numthreads(8, 8, 8)]
+void GenerateWorleyPositions(uint3 id : SV_DispatchThreadID)
+{
+	if (id.x >= (uint) positionsSize || id.y >= (uint) positionsSize || id.z >= (uint) positionsSize)
+		return;
+
+	float x = Hash(seedX, id.x, id.y, id.z);
+	float y = Hash(seedY, id.x, id.y, id.z);
+	float z = Hash(seedZ, id.x, id.y, id.z);
+	randomPositions[id] = float4(x, y, z, 0);
+}
+
+float3 GetWorleyPosition(int x, int y, int z)
+{
+	if (x < 0)
+		x += positionsSize;
+	if (x >= positionsSize)
+		x -= positionsSize;
+
+	if (y < 0)
+		y += positionsSize;
+	if (y >= positionsSize)
+		y -= positionsSize;
+
+	if (z < 0)
+		z += positionsSize;
+	if (z >= positionsSize)
+		z -= positionsSize;
+
+	uint3 position = uint3(x, y, z);
+	float3 value = randomPositions[position];
+	return value;
+}
+
+[numthreads(8, 8, 8)]
+void GenerateWorleyNoise(uint3 id : SV_DispatchThreadID)
+{
+	if (id.x >= (uint) textureSize || id.y >= (uint) textureSize || id.z >= (uint) textureSize)
+		return;
+
+	int xLocation = id.x / pixelsPerPosition;
+	int yLocation = id.y / pixelsPerPosition;
+	int zLocation = id.z / pixelsPerPosition;
+	
+	float closestDistance = maximumDistance;
+	float3 currentPosition = float3(id.x, id.y, id.z) / pixelsPerPosition;
+	for (int i = -1; i < 2; i++)
+	{
+		for (int j = -1; j < 2; j++)
+		{
+			for (int h = -1; h < 2; h++)
+			{
+				float3 position = GetWorleyPosition(i + xLocation, j + yLocation, h + zLocation);
+				position += float3(i + xLocation, j + yLocation, h + zLocation);
+	
+				float distance = length(position - currentPosition);
+				closestDistance = min(closestDistance, distance);
+			}
+		}
+	}
+	worleyNoise[id][worleyNoise] = 1 - (closestDistance / maximumDistance);
+}

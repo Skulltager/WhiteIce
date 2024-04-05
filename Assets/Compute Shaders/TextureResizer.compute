@@ -1,0 +1,40 @@
+﻿#pragma kernel ResizeTexture;
+
+uint targetWidth;
+uint targetHeight;
+uint sourceWidth;
+uint sourceHeight;
+float widthRatio;
+float heightRatio;
+
+Texture2D<float4> sourceTexture;
+RWTexture2D<float4> targetTexture;
+
+[numthreads(32, 32, 1)]
+void ResizeTexture(uint3 id : SV_DispatchThreadID)
+{
+	if (id.x > targetWidth || id.y > targetHeight)
+		return;
+
+	float xCoord = id.x * widthRatio;
+	float yCoord = id.y * heightRatio;
+
+	int left = (int)xCoord;
+	int bottom = (int)yCoord;
+	int right = ((left + 1) < sourceWidth) * (left + 1);
+	int top = ((bottom + 1) < sourceHeight) * (bottom + 1);
+	left = (left < 0) * (sourceWidth - 1) + (left >= 0) * left;
+	bottom = (bottom < 0) * (sourceHeight - 1) + (bottom >= 0) * bottom;
+
+	xCoord %= 1;
+	yCoord %= 1;
+
+	float4 topColor = float4(0, 0, 0, 0);
+	float4 bottomColor = float4(0, 0, 0, 0);
+	bottomColor += sourceTexture[int2(left, bottom)] * (1 - xCoord);
+	bottomColor += sourceTexture[int2(right, bottom)] * xCoord;
+	topColor += sourceTexture[int2(left, top)] * (1 - xCoord);
+	topColor += sourceTexture[int2(right, top)] * xCoord;
+	float4 finalColor = bottomColor * (1 - yCoord) + topColor * yCoord;
+	targetTexture[id.xy] = finalColor;
+}

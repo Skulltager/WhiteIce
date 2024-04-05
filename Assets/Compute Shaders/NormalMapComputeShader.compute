@@ -1,0 +1,38 @@
+﻿#pragma kernel GenerateNormals;
+
+int size;
+
+StructuredBuffer<float> edgeHeights;
+StructuredBuffer<float> heightMap;
+
+RWStructuredBuffer<float3> normalMap;
+
+float GetHeight(int xIndex, int yIndex)
+{
+	if (xIndex >= 0 && xIndex < size && yIndex >= 0 && yIndex < size)
+		return heightMap[xIndex + yIndex * size];
+
+	int edgeIndex = 0;
+	edgeIndex += (yIndex == -1) * (xIndex + 1);
+	edgeIndex += (xIndex == size) * (size + 2 + yIndex);
+	edgeIndex += (yIndex == size) * ((size + 1) * 3 - (xIndex + 1));
+	edgeIndex += (xIndex == -1) * ((size + 1) * 4 - (yIndex + 1));
+	return edgeHeights[edgeIndex];
+}
+
+[numthreads(8, 8, 1)]
+void GenerateNormals(uint3 id : SV_DispatchThreadID)
+{
+	if (id.x >= size || id.y >= size)
+		return;
+
+	int xIndex = id.x;
+	int yIndex = id.y;
+	float3 center = float3(xIndex, heightMap[xIndex + yIndex * size], yIndex);
+	float3 left = float3(xIndex - 1, GetHeight(xIndex - 1, yIndex), yIndex) - center;
+	float3 top = float3(xIndex, GetHeight(xIndex, yIndex + 1), yIndex + 1) - center;
+	float3 bottom = float3(xIndex, GetHeight(xIndex, yIndex - 1), yIndex - 1) - center;
+	float3 right = float3(xIndex + 1, GetHeight(xIndex + 1, yIndex), yIndex) - center;
+
+	normalMap[id.x + id.y * size] = normalize(cross(left, top) + cross(top, right) + cross(right, bottom) + cross(bottom, left));
+}

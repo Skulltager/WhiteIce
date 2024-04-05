@@ -1,0 +1,212 @@
+﻿#pragma kernel GeneratePerlinNoiseHeights;
+#pragma kernel GeneratePerlinNoiseTexture;
+#pragma kernel SmoothHeightMap;
+
+const static int MAX_BIOMES = 4;
+
+uint roughSize;
+uint size;
+float smoothFactor;
+int smoothRadius;
+int biomes;
+int xLocation;
+int yLocation;
+float lowestHeight;
+float highestHeight;
+
+StructuredBuffer<int> biomeLayers;
+StructuredBuffer<int> biomeStepIndices;
+
+StructuredBuffer<float4> biomeColors;
+StructuredBuffer<float> biomeScaleStrengths;
+StructuredBuffer<float> biomeClampStrengths;
+StructuredBuffer<float> biomeBlendStrengths;
+StructuredBuffer<float> biomeElevationStrengths;
+
+StructuredBuffer<uint> biomeSeeds;
+StructuredBuffer<float> biomeStepSizes;
+StructuredBuffer<float> biomeStepRoughness;
+
+StructuredBuffer<int> heightLayers;
+StructuredBuffer<int> heightStepIndices;
+
+StructuredBuffer<float> heightMinimums;
+StructuredBuffer<float> heightMaximums;
+StructuredBuffer<float> heightClampStrengths;
+
+StructuredBuffer<uint> heightSeeds;
+StructuredBuffer<float> heightStepSizes;
+StructuredBuffer<float> heightStepRoughness;
+
+RWStructuredBuffer<float> biomeMap;
+RWStructuredBuffer<float> roughBiomeMap;
+RWStructuredBuffer<float> heightMap;
+RWStructuredBuffer<float> roughHeightMap;
+
+RWTexture2D<float4> heightTexture;
+
+float Hash(uint seed, int xLocation, int yLocation)
+{ 
+	seed ^= 2747636419u;
+	seed += xLocation;
+	seed *= 2654435769u;
+	seed ^= seed >> 16;
+	seed += yLocation;
+	seed *= 2654435769u;
+	seed ^= seed >> 16;
+	seed *= 2654435769u;
+	return seed / 4294967295.0;
+}
+
+[numthreads(8, 8, 1)]
+void GeneratePerlinNoiseHeights(uint3 id : SV_DispatchThreadID)
+{
+	if (id.x >= roughSize || id.y >= roughSize)
+		return;
+
+	int i;
+	int j;
+
+	float biomeValues[MAX_BIOMES];
+	float highestBiomeValue = 0;
+
+	int xPosition = id.x + xLocation;
+	int yPosition = id.y + yLocation;
+
+	for (i = 0; i < biomes; i++)
+	{
+		int biomeLayerCount = biomeLayers[i];
+		int biomeStartIndex = biomeStepIndices[i];
+		float biomeValue = biomeElevationStrengths[i];
+		for (j = 0; j < biomeLayerCount; j++)
+		{
+			float stepSize = biomeStepSizes[biomeStartIndex + j];
+			float roughness = biomeStepRoughness[biomeStartIndex + j];
+			int seed = biomeSeeds[biomeStartIndex + j];
+
+			float xPos = xPosition / stepSize;
+			float yPos = yPosition / stepSize;
+
+			int xIndex = xPos;
+			int yIndex = yPos;
+
+			float horizontalFactor = (xPos < 0) * (1 - (-xPos % 1)) + (xPos > 0) * (xPos % 1);
+			float verticalFactor = (yPos < 0) * (1 - (-yPos % 1)) + (yPos > 0) * (yPos % 1);
+
+			xIndex -= xPos < 0 && horizontalFactor > 0;
+			yIndex -= yPos < 0 && verticalFactor > 0;
+
+			float bottomLeftValue = Hash(seed, xIndex, yIndex);
+			float bottomRightValue = Hash(seed, xIndex + 1, yIndex);
+			float topLeftValue = Hash(seed, xIndex, yIndex + 1);
+			float topRightValue = Hash(seed, xIndex + 1, yIndex + 1);
+
+			float leftHorizontalValue = bottomLeftValue * (1 - verticalFactor) + topLeftValue * verticalFactor;
+			float rightHorizontalValue = bottomRightValue * (1 - verticalFactor) + topRightValue * verticalFactor;
+			biomeValue += (leftHorizontalValue * (1 - horizontalFactor) + rightHorizontalValue * horizontalFactor) * roughness;
+		}
+		biomeValue = (biomeValue >= 0.5) * (biomeValue + (1 - biomeValue) * biomeClampStrengths[i]) + (biomeValue < 0.5) * (biomeValue - (biomeValue * biomeClampStrengths[i]));
+		biomeValue += biomeValue * biomeScaleStrengths[i];
+		biomeValues[i] = biomeValue;
+		highestBiomeValue = (highestBiomeValue <= biomeValue) * biomeValue + (highestBiomeValue > biomeValue) * highestBiomeValue;
+	}
+
+	float biomeStrengths[MAX_BIOMES];
+	float totalBiomeValue = 0;
+	for (i = 0; i < biomes; i++)
+	{
+		biomeStrengths[i] = (biomeValues[i] == highestBiomeValue) * 1 + (biomeValues[i] < highestBiomeValue && biomeValues[i] > highestBiomeValue - biomeBlendStrengths[i]) * ((biomeValues[i] - highestBiomeValue + biomeBlendStrengths[i]) / biomeBlendStrengths[i]) * ((biomeValues[i] - highestBiomeValue + biomeBlendStrengths[i]) / biomeBlendStrengths[i]);
+		totalBiomeValue += biomeStrengths[i];
+	}
+
+	for (i = 0; i < biomes; i++)
+		roughBiomeMap[id.x + id.y * roughSize + i * roughSize * roughSize] = biomeStrengths[i] / totalBiomeValue;
+
+	roughHeightMap[id.x + id.y * roughSize] = 0;
+	for (i = 0; i < biomes; i++)
+	{
+		int heightLayerCount = heightLayers[i];
+		int heightStartIndex = heightStepIndices[i];
+
+		float heightMinimum = heightMinimums[i];
+		float heightMaximum = heightMaximums[i];
+		float heightDifference = heightMaximum - heightMinimum;
+		float heightValue = 0;
+		for (j = 0; j < heightLayerCount; j++)
+		{
+			float stepSize = heightStepSizes[heightStartIndex + j];
+			float roughness = heightStepRoughness[heightStartIndex + j];
+			int seed = heightSeeds[heightStartIndex + j];
+
+			float xPos = xPosition / stepSize;
+			float yPos = yPosition / stepSize;
+
+			int xIndex = xPos;
+			int yIndex = yPos;
+
+			float horizontalFactor = (xPos < 0) * (1 - (-xPos % 1)) + (xPos > 0) * (xPos % 1);
+			float verticalFactor = (yPos < 0) * (1 - (-yPos % 1)) + (yPos > 0) * (yPos % 1);
+
+			xIndex -= xPos < 0 && horizontalFactor > 0;
+			yIndex -= yPos < 0 && verticalFactor > 0;
+
+			float bottomLeftValue = Hash(seed, xIndex, yIndex);
+			float bottomRightValue = Hash(seed, xIndex + 1, yIndex);
+			float topLeftValue = Hash(seed, xIndex, yIndex + 1);
+			float topRightValue = Hash(seed, xIndex + 1, yIndex + 1);
+
+			float leftHorizontalValue = bottomLeftValue * (1 - verticalFactor) + topLeftValue * verticalFactor;
+			float rightHorizontalValue = bottomRightValue * (1 - verticalFactor) + topRightValue * verticalFactor;
+			heightValue += (leftHorizontalValue * (1 - horizontalFactor) + rightHorizontalValue * horizontalFactor) * roughness;
+		}
+		heightValue = (heightValue >= 0.5) * (heightValue + (1 - heightValue) * heightClampStrengths[i]) + (heightValue < 0.5) * (heightValue - (heightValue * heightClampStrengths[i]));
+		roughHeightMap[id.x + id.y * roughSize] += roughBiomeMap[id.x + id.y * roughSize + i * roughSize * roughSize] * (heightMinimum + heightValue * heightDifference);
+	}
+}
+
+[numthreads(8,8,1)]
+void SmoothHeightMap(uint3 id : SV_DispatchThreadID)
+{
+	if (id.x >= size || id.y >= size)
+		return;
+
+	int i;
+	int j;
+
+	heightMap[id.x + id.y * size] = 0;
+	for (i = -smoothRadius; i <= smoothRadius; i++)
+	{
+		int range = smoothRadius - max(i, -i);
+		for (j = -range; j <= range; j++)
+		{
+			heightMap[id.x + id.y * size] += roughHeightMap[id.x + smoothRadius + i + (id.y + smoothRadius + j) * roughSize] * smoothFactor;
+		}
+	}
+
+	for (i = 0; i < biomes; i++)
+	{
+		biomeMap[id.x + id.y * size + i * size * size] = roughBiomeMap[id.x + smoothRadius + (id.y + smoothRadius) * roughSize + i * roughSize * roughSize];
+	}
+}
+
+[numthreads(8, 8, 1)]
+void GeneratePerlinNoiseTexture(uint3 id : SV_DispatchThreadID)
+{
+	if (id.x >= size || id.y >= size)
+		return;
+
+	int i;
+	float4 finalColor = float4(0, 0, 0, 0);
+
+	for (i = 0; i < biomes; i++)
+	{
+		finalColor += biomeColors[i] * biomeMap[id.x + id.y * size + i * size * size];
+		//float heightColor = (heightMap[id.x + id.y * size] - lowestHeight) / heightDifference * biomeMap[id.x + id.y * size + i * size * size];
+		//finalColor += float4(heightColor, heightColor, heightColor, 0.5f);
+	}
+	//finalColor.a = 1;
+	//float heightDifference = highestHeight - lowestHeight;
+	//float colorValue = (heightMap[id.x + id.y * size] - lowestHeight) / heightDifference;
+
+	heightTexture[id.xy] = finalColor;
+}

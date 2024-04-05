@@ -1,0 +1,121 @@
+﻿#pragma kernel GenerateEdges;
+#pragma kernel GenerateCenter;
+#pragma kernel GenerateChunk;
+
+uint biomes;
+uint totalEdgeVertices;
+uint totalEdgeTriangles;
+uint edgeSize;
+uint centerSize;
+uint gapSize;
+uint chunkSize;
+uint heightMapSize;
+uint triangleCount;
+
+StructuredBuffer<float> heightMap;
+StructuredBuffer<float3> normalMap;
+
+RWStructuredBuffer<float3> normals;
+RWStructuredBuffer<float3> vertexPositions;
+RWStructuredBuffer<uint> indices;
+
+[numthreads(8, 1, 1)]
+void GenerateEdges(uint3 id : SV_DispatchThreadID)
+{
+	if (id.x >= edgeSize - 1)
+		return;
+
+	float xPosition = id.x;
+	float zPosition = 0;
+	float yPosition = heightMap[id.x];
+	vertexPositions[id.x] = float3(id.x, heightMap[id.x], 0);
+	vertexPositions[id.x + (edgeSize - 1)] = float3(edgeSize - 1, heightMap[(id.x + 1) * edgeSize - 1], id.x);
+	vertexPositions[id.x + (edgeSize - 1) * 2] = float3(edgeSize - id.x - 1, heightMap[edgeSize * edgeSize - id.x - 1], edgeSize - 1);
+	vertexPositions[id.x + (edgeSize - 1) * 3] = float3(0, heightMap[(edgeSize - id.x - 1) * edgeSize], edgeSize - id.x - 1);
+
+	normals[id.x] = normalMap[id.x];
+	normals[id.x + (edgeSize - 1)] = normalMap[(id.x + 1) * edgeSize - 1];
+	normals[id.x + (edgeSize - 1) * 2] = normalMap[edgeSize * edgeSize - id.x - 1];
+	normals[id.x + (edgeSize - 1) * 3] = normalMap[(edgeSize - id.x - 1) * edgeSize];
+
+	int xValue = (float) id.x / gapSize - 0.5f;
+	int closestIndex = (xValue >= 0 && xValue <  (int) centerSize) * xValue + (xValue == (int) centerSize) * (xValue - 1);
+
+	indices[id.x * 3] = id.x;
+	indices[id.x * 3 + 1] = totalEdgeVertices + closestIndex;
+	indices[id.x * 3 + 2] = id.x + 1;
+
+	indices[(id.x + edgeSize - 1) * 3] = id.x + edgeSize - 1;
+	indices[(id.x + edgeSize - 1) * 3 + 1] = totalEdgeVertices + closestIndex * centerSize + centerSize - 1;
+	indices[(id.x + edgeSize - 1) * 3 + 2] = id.x + edgeSize;
+
+	indices[(id.x + (edgeSize - 1) * 2) * 3] = id.x + (edgeSize - 1) * 2;
+	indices[(id.x + (edgeSize - 1) * 2) * 3 + 1] = totalEdgeVertices + centerSize * centerSize - closestIndex - 1;
+	indices[(id.x + (edgeSize - 1) * 2) * 3 + 2] = id.x + (edgeSize - 1) * 2 + 1;
+
+	indices[(id.x + (edgeSize - 1) * 3) * 3] = id.x + (edgeSize - 1) * 3;
+	indices[(id.x + (edgeSize - 1) * 3) * 3 + 1] = totalEdgeVertices + (centerSize - closestIndex - 1) * centerSize;
+	indices[(id.x + (edgeSize - 1) * 3) * 3 + 2] = (id.x < edgeSize - 2) * (id.x + (edgeSize - 1) * 3 + 1);
+
+	xValue = (float)id.x / gapSize;
+	if (((float) id.x / gapSize > (float) xValue) || (xValue >= (int)centerSize - 1))
+		return;
+
+	int halfGapSize = gapSize / 2 + (gapSize == 1);
+	int edgeTrianglesBehind = (edgeSize - 1) * 4;
+	indices[(edgeTrianglesBehind + xValue) * 3] = totalEdgeVertices + xValue;
+	indices[(edgeTrianglesBehind + xValue) * 3 + 1] = totalEdgeVertices + xValue + 1;
+	indices[(edgeTrianglesBehind + xValue) * 3 + 2] = (xValue + 1) * gapSize + halfGapSize;
+	
+	indices[(edgeTrianglesBehind + (centerSize - 1) + xValue) * 3] = totalEdgeVertices + (xValue + 1) * centerSize - 1;
+	indices[(edgeTrianglesBehind + (centerSize - 1) + xValue) * 3 + 1] = totalEdgeVertices + (xValue + 2) * centerSize - 1;
+	indices[(edgeTrianglesBehind + (centerSize - 1) + xValue) * 3 + 2] = (xValue + 1) * gapSize + edgeSize - 1 + halfGapSize;
+	
+	indices[(edgeTrianglesBehind + (centerSize - 1) * 2 + xValue) * 3] = totalEdgeVertices + (centerSize * centerSize) - xValue - 1;
+	indices[(edgeTrianglesBehind + (centerSize - 1) * 2 + xValue) * 3 + 1] = totalEdgeVertices + (centerSize * centerSize) - xValue - 2;
+	indices[(edgeTrianglesBehind + (centerSize - 1) * 2 + xValue) * 3 + 2] = (xValue + 1) * gapSize + (edgeSize - 1) * 2 + halfGapSize;
+	
+	indices[(edgeTrianglesBehind + (centerSize - 1) * 3 + xValue) * 3] = totalEdgeVertices + (centerSize - xValue - 1) * centerSize;
+	indices[(edgeTrianglesBehind + (centerSize - 1) * 3 + xValue) * 3 + 1] = totalEdgeVertices + (centerSize - xValue - 2) * centerSize;
+	indices[(edgeTrianglesBehind + (centerSize - 1) * 3 + xValue) * 3 + 2] = (xValue + 1) * gapSize + (edgeSize - 1) * 3 + halfGapSize;
+}
+
+[numthreads(4, 4, 1)]
+void GenerateCenter(uint3 id : SV_DispatchThreadID)
+{
+	if (id.x >= centerSize || id.y >= centerSize)
+		return;
+
+	vertexPositions[totalEdgeVertices + id.x + id.y * centerSize] = float3((id.x + 1) * gapSize, heightMap[(id.x + 1) * gapSize + ((id.y + 1) * gapSize) * edgeSize], (id.y + 1) * gapSize);
+	normals[totalEdgeVertices + id.x + id.y * centerSize] = normalMap[(id.x + 1) * gapSize + ((id.y + 1) * gapSize) * edgeSize];
+
+	if (id.x >= centerSize - 1 || id.y >= centerSize - 1)
+		return;
+
+	indices[(totalEdgeTriangles + (id.x + id.y * (centerSize - 1)) * 2) * 3] = totalEdgeVertices + id.x + id.y * centerSize;
+	indices[(totalEdgeTriangles + (id.x + id.y * (centerSize - 1)) * 2) * 3 + 1] = totalEdgeVertices + id.x + (id.y + 1) * centerSize;
+	indices[(totalEdgeTriangles + (id.x + id.y * (centerSize - 1)) * 2) * 3 + 2] = totalEdgeVertices + (id.x + 1) + id.y * centerSize;
+
+	indices[(totalEdgeTriangles + (id.x + id.y * (centerSize - 1)) * 2) * 3 + 3] = totalEdgeVertices + (id.x + 1) + (id.y + 1) * centerSize;
+	indices[(totalEdgeTriangles + (id.x + id.y * (centerSize - 1)) * 2) * 3 + 4] = totalEdgeVertices + (id.x + 1) + id.y * centerSize;
+	indices[(totalEdgeTriangles + (id.x + id.y * (centerSize - 1)) * 2) * 3 + 5] = totalEdgeVertices + id.x + (id.y + 1) * centerSize;
+}
+
+[numthreads(8, 8, 1)]
+void GenerateChunk(uint3 id : SV_DispatchThreadID)
+{
+	if (id.x >= chunkSize || id.y >= chunkSize)
+		return;
+
+	vertexPositions[id.x + id.y * chunkSize] = float3(id.x * gapSize, heightMap[id.x * gapSize + (id.y * gapSize) * heightMapSize], id.y * gapSize);
+	normals[id.x + id.y * chunkSize] = normalMap[id.x * gapSize + (id.y * gapSize) * heightMapSize];
+
+	if (id.x >= chunkSize - 1 || id.y >= chunkSize - 1)
+		return;
+
+	uint index = (id.x + id.y * (chunkSize - 1)) * 4;
+	indices[index] = id.x + id.y * chunkSize;
+	indices[index + 1] = id.x + (id.y + 1) * chunkSize;
+	indices[index + 2] = (id.x + 1) + (id.y + 1) * chunkSize;
+	indices[index + 3] = (id.x + 1) + id.y * chunkSize;
+}
